@@ -17,6 +17,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/jeffssh/gex"
 )
 
 type TLS struct {
@@ -168,13 +170,14 @@ func dumpData(r io.Reader, source string, id int) {
 
 }
 
-func handleServerMessage(connR, connL net.Conn, id int, closer *sync.Once) {
+func handleServerMessage(connR, connL net.Conn, g *gex.Gex, id int, closer *sync.Once) {
 	// see comments in handleConnection
 	// this is the same, just inverse, reads from server, writes to client
 	closeFunc := func() {
 		fmt.Println("[*] Connections closed.")
 		_ = connL.Close()
 		_ = connR.Close()
+		g.Close()
 	}
 
 	r, w := io.Pipe()
@@ -199,6 +202,7 @@ func handleServerMessage(connR, connL net.Conn, id int, closer *sync.Once) {
 func handleConnection(connL net.Conn, isTLS bool) {
 	var err error
 	var connR net.Conn
+	var g *gex.Gex
 	var closer sync.Once
 
 	// make sure connections get closed
@@ -206,6 +210,7 @@ func handleConnection(connL net.Conn, isTLS bool) {
 		fmt.Println("[*] Connections closed")
 		_ = connL.Close()
 		_ = connR.Close()
+		g.Close()
 	}
 
 	if isTLS {
@@ -232,8 +237,23 @@ func handleConnection(connL net.Conn, isTLS bool) {
 
 	fmt.Printf("[*][%d] Connected to server: %s\n", ids, connR.RemoteAddr())
 
+	gexInR, gexInW := io.Pipe()
+	gexOutR, gexOutW := io.Pipe()
+	go func() {
+		io.Copy(gexInW, connL)
+	}()
+	g, err = gex.New(gexInR, gexOutW, 2<<16)
+	if err != nil {
+		fmt.Println("[x] Couldn't make a new gex: %v\n", err)
+		return
+	}
+	go func() {
+		g.Serve()
+	}()
+	/*
+	 */
 	// setup handler to read from server and print to screen
-	go handleServerMessage(connR, connL, ids, &closer)
+	go handleServerMessage(connR, connL, g, ids, &closer)
 
 	// setup a pipe that will allow writing to the output (stdout) writer, without
 	// consuming the data
@@ -251,7 +271,7 @@ func handleConnection(connL net.Conn, isTLS bool) {
 
 	// consume all data and forward between connections in memory
 	// directly pass connL (client) into the io.Copy as the reader. There is no need to create a new io.Reader(connL)
-	_, e := io.Copy(tee, connL)
+	_, e := io.Copy(tee, gexOutR)
 	if e != nil && e != io.EOF {
 		fmt.Printf("bad io.Copy [handleConnection]: %v", e)
 	}
