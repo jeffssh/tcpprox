@@ -180,10 +180,25 @@ func handleServerMessage(connR, connL net.Conn, g *gex.Gex, id int, closer *sync
 		g.Close()
 	}
 
+	gexInR, gexInW := io.Pipe()
+	gexOutR, gexOutW := io.Pipe()
+	go func() {
+		io.Copy(gexInW, connR)
+	}()
+	gs, err := gex.New(gexInR, gexOutW, 1<<16)
+	if err != nil {
+		fmt.Printf("[x] Couldn't make a new gex: %v\n", err)
+		return
+	}
+	go func() {
+		gs.Serve()
+	}()
+
+
 	r, w := io.Pipe()
 	tee := io.MultiWriter(connL, w)
 	go dumpData(r, "SERVER", id)
-	_, e := io.Copy(tee, connR)
+	_, e := io.Copy(tee, gexOutR)
 
 	if e != nil && e != io.EOF {
 		// check if error is about the closed connection
@@ -242,9 +257,9 @@ func handleConnection(connL net.Conn, isTLS bool) {
 	go func() {
 		io.Copy(gexInW, connL)
 	}()
-	g, err = gex.New(gexInR, gexOutW, 2<<16)
+	g, err = gex.New(gexInR, gexOutW, 1<<16)
 	if err != nil {
-		fmt.Println("[x] Couldn't make a new gex: %v\n", err)
+		fmt.Printf("[x] Couldn't make a new gex: %v\n", err)
 		return
 	}
 	go func() {
